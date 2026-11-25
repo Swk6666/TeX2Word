@@ -152,8 +152,11 @@ def pdf_markdown(source: Path, work: Path, lang: str, progress):
     from rapid_doc.backend.pipeline.pipeline_middle_json_mkcontent import union_make
     from rapid_doc.utils.enum_class import MakeMode
 
-    progress("正在本机识别 PDF 版面、正文和公式；首次运行会下载识别模型。")
-    result = RapidDoc(lang=lang, pdf_pages_batch=8)(source, f_dump_content_list=False)
+    progress("正在本机识别 PDF 版面、正文和公式。")
+    # Retain the native PDF table route. For raster tables, use the OCR model
+    # distributed with RapidDoc so a new table layout also works offline.
+    engine = RapidDoc(lang=lang, pdf_pages_batch=8, table_config={"model_type": "slanet_1m"})
+    result = engine(source, f_dump_content_list=False)
     pages = result.middle_json["pdf_info"]
     if not pages:
         raise ValueError("未读取到 PDF 页面。")

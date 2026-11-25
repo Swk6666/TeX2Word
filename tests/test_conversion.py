@@ -54,6 +54,17 @@ class ConversionTests(unittest.TestCase):
                 xml = package.read("word/document.xml")
             self.assertIn(b"REF MTEquation2", xml)
 
+    def test_bilingual_ellipse_and_piecewise_function(self):
+        path = FIXTURE.with_name("bilingual.tex")
+        with TemporaryDirectory() as folder:
+            manuscript = Manuscript(path, "latex", path.read_text(encoding="utf-8"))
+            manuscript.write(Path(folder) / "bilingual.docx")
+            self.assertEqual([eq.display for eq in manuscript.equations], [False, False, True, False, True])
+            self.assertIn('mathvariant="script">A</mi>', manuscript.equations[1].mathml)
+            self.assertIn("<msqrt", manuscript.equations[2].mathml)
+            self.assertIn("<mtable", manuscript.equations[4].mathml)
+            self.assertEqual(manuscript.labels["eq:area"].number, "1")
+
     def test_relative_input_and_nested_math(self):
         with TemporaryDirectory() as folder:
             p = Path(folder)

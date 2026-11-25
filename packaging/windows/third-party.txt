@@ -1,0 +1,23 @@
+TeX2Word 在本机调用另行安装的 Microsoft Word 和 MathType。
+
+随安装包提供的 Python 运行环境来自 python-build-standalone。
+https://github.com/astral-sh/python-build-standalone
+https://www.python.org/
+Python 许可见 runtime\LICENSE.txt。
+
+Pandoc 的版权和许可见 runtime\Lib\site-packages\pypandoc\files\COPYRIGHT.txt。
+https://github.com/jgm/pandoc/releases/tag/3.9
+
+PDF 识别使用 RapidDoc、RapidOCR、PaddleOCR 的模型与 ONNX Runtime。
+https://github.com/RapidAI/RapidDoc
+https://github.com/RapidAI/RapidOCR
+https://github.com/PaddlePaddle/PaddleOCR
+https://onnxruntime.ai/
+https://www.modelscope.cn/models/RapidAI/RapidDoc
+https://www.modelscope.cn/models/RapidAI/RapidOCR
+
+随包 Python 库各自的许可保存在 runtime\Lib\site-packages 下对应的
+.dist-info 目录、licenses 目录或库目录中。微软 Visual C++ 运行库来自
+Visual Studio 的可再分发组件。安装程序由 NSIS 生成。
+https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+https://nsis.sourceforge.io/

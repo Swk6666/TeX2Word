@@ -1,0 +1,22 @@
+\documentclass{ctexart}
+\usepackage{amsmath}
+\newcommand{\area}{\mathcal{A}}
+\title{椭圆与分段函数 / Ellipses and piecewise functions}
+\date{}
+\begin{document}
+\maketitle
+\section{椭圆面积}
+半轴长度满足 $a,b>0$。The ellipse has area $\area$ given by
+\begin{equation}\label{eq:area}
+  \area=4\int_0^a b\sqrt{1-\frac{x^2}{a^2}}\,dx=\pi ab .
+\end{equation}
+\section{A piecewise function}
+对实数 $x$，定义
+\begin{equation}
+  f(x)=\begin{cases}
+    x^2 & x\ge 0,\\
+    -x & x<0 .
+  \end{cases}
+\end{equation}
+式 \eqref{eq:area} 给出椭圆面积。
+\end{document}

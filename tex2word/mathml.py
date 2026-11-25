@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import subprocess
+import unicodedata
 
 import pypandoc
 from lxml import etree, html
@@ -60,6 +61,17 @@ def make_mathml(equations: list[Equation], version: list[int], cwd: Path) -> Non
                                    "display": "block" if eq.display else "inline"})
         node = presentation[0]
         node.tail = None
+        # Pandoc can supply both a styled Unicode letter (such as 𝒜) and its
+        # mathvariant. The desktop editor needs the base letter plus the style.
+        for token in node.iter("mi", "mo", "mn"):
+            if token.text and token.get("mathvariant"):
+                letters = []
+                for ch in token.text:
+                    decomposition = unicodedata.decomposition(ch).split()
+                    if len(decomposition) == 2 and decomposition[0] == "<font>":
+                        ch = chr(int(decomposition[1], 16))
+                    letters.append(ch)
+                token.text = "".join(letters)
         for table in node.iter("mtable"):
             row = table.find("mtr")
             if row is not None and any(c.get("columnalign") for c in row):
