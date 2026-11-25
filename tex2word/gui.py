@@ -16,12 +16,15 @@ def run():
     frame.pack(fill="both", expand=True)
     frame.columnconfigure(1, weight=1)
     source, target = tk.StringVar(), tk.StringVar()
-    language, status = tk.StringVar(value="ch"), tk.StringVar(value="请选择 TeX 主文件或 PDF。")
+    language, status = tk.StringVar(value="ch"), tk.StringVar(value="请选择 PDF、TeX 或 Markdown 文件。")
     events = SimpleQueue()
     busy = closing = False
 
     def choose_input():
-        path = filedialog.askopenfilename(filetypes=[("TeX 与 PDF", "*.tex *.pdf"), ("所有文件", "*.*")])
+        path = filedialog.askopenfilename(
+            filetypes=[("支持的文档", "*.pdf *.tex *.md *.markdown"), ("PDF 文档", "*.pdf"),
+                       ("TeX 主文件", "*.tex"), ("Markdown 文档", "*.md *.markdown"), ("所有文件", "*.*")]
+        )
         if path:
             p = Path(path)
             source.set(path)
@@ -101,8 +104,8 @@ def run():
     def begin():
         nonlocal busy
         p, dest = Path(source.get().strip()), Path(target.get().strip())
-        if not p.is_file() or p.suffix.lower() not in {".tex", ".pdf"}:
-            messagebox.showerror("输入文件", "请选择已有的 .tex 或 .pdf 文件。", parent=root)
+        if not p.is_file() or p.suffix.lower() not in {".tex", ".pdf", ".md", ".markdown"}:
+            messagebox.showerror("输入文件", "请选择已有的 .pdf、.tex 或 .md 文件。", parent=root)
             return
         if dest.suffix.lower() != ".docx":
             messagebox.showerror("输出路径", "请选择 .docx 输出文件。", parent=root)

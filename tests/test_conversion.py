@@ -11,8 +11,17 @@ from lxml import etree
 from tex2word.braces import prepare
 from tex2word.convert import convert
 from tex2word.manuscript import Manuscript
-from tex2word.pdf_input import inline_symbols, join_split_index, repair_scripts
-from tex2word.word import editing, insert_mathml, mathtype, read_mathml, verify, word_document
+from tex2word.md_input import normalize_markdown, read_markdown
+from tex2word.pdf_input import (
+    _build_markdown,
+    _clean_html_table,
+    _merge_cross_page_paragraphs,
+    improve_text_layer,
+    inline_symbols,
+    join_split_index,
+    repair_scripts,
+)
+from tex2word.word import editing, insert_mathml, mathtype, read_mathml, style_document, verify, word_document
 
 
 FIXTURE = Path(__file__).with_name("english.tex")
@@ -78,12 +87,158 @@ class ConversionTests(unittest.TestCase):
             self.assertIn("中文", "\n".join(b.text for b in Document(p / "result.docx").paragraphs))
 
     def test_existing_output_is_preserved(self):
+        from tex2word.convert import _publish
         with TemporaryDirectory() as folder:
-            out = Path(folder) / "existing.docx"
+            p = Path(folder)
+            out = p / "existing.docx"
             out.write_bytes(b"existing")
             with self.assertRaises(FileExistsError):
                 convert(FIXTURE, out)
             self.assertEqual(out.read_bytes(), b"existing")
+            staged = p / "staged.docx"
+            staged.write_bytes(b"new-bytes")
+            with self.assertRaises(FileExistsError):
+                _publish(staged, out, overwrite=False)
+            self.assertEqual(out.read_bytes(), b"existing")
+            _publish(staged, out, overwrite=True)
+            self.assertEqual(out.read_bytes(), b"new-bytes")
+            self.assertEqual([f.name for f in p.glob(".tex2word-*")], [])
+
+    def test_html_table_math_and_headings(self):
+        cleaned = _clean_html_table(
+            "<table><tbody><tr><td>步数</td><td>1</td><td>2</td></tr>"
+            "<tr><td>压缩量</td><td>2.5</td><td>5</td></tr>"
+            "<tr><td>(mm)</td><td></td><td></td></tr></tbody></table>"
+        )
+        self.assertIn("<thead>", cleaned)
+        self.assertIn("压缩量(mm)", cleaned)
+        self.assertEqual(cleaned.count("<tr"), 2)
+
+        md = (
+            "# 目 录\n\n第1章 绪论........1\n1.3 研究........2\n\n"
+            "# 第 1 章 绪论 {.t2w-center}\n\n"
+            "# 1.3研究内容与研究目标\n\n"
+            "```{=t2w-table}\n"
+            "<table><thead><tr><th>材料</th><th>密度$(\\mathrm{kg}/\\mathrm{m}^3)$</th></tr></thead>"
+            "<tbody><tr><td>钢</td><td>7850</td></tr></tbody></table>\n"
+            "```\n"
+        )
+        with TemporaryDirectory() as folder:
+            p = Path(folder)
+            src = p / "doc.md"
+            src.write_text(md, encoding="utf-8")
+            ms = Manuscript(src, "markdown")
+            staged = p / "out.docx"
+            ms.write(staged)
+            style_document(staged, ms)
+            self.assertTrue(ms.book)
+            self.assertTrue(ms.has_toc)
+            self.assertEqual(ms.centered_headings, {1})
+            self.assertEqual(len(ms.equations), 1)
+            doc = Document(staged)
+            self.assertEqual(len(doc.tables), 1)
+            self.assertEqual(doc.tables[0].cell(1, 0).text, "钢")
+            headings = [(para.style.name, para.text) for para in doc.paragraphs
+                        if para.style and para.style.name.startswith("Heading ")]
+            self.assertEqual(headings, [("Heading 1", "第 1 章 绪论"), ("Heading 2", "1.3研究内容与研究目标")])
+
+    def test_pdf_false_positive_equations_and_prose_not_caption(self):
+        def run(text, face, size, x0, x1, y0=100, y1=112):
+            return {"text": text, "font": {"name": face, "size": size}, "bbox": [x0, y0, x1, y1]}
+
+        pages = [
+            {
+                "page_idx": 0,
+                "page_size": [595, 841],
+                "para_blocks": [
+                    {
+                        "type": "text",
+                        "original_label": "text",
+                        "bbox": [68, 100, 520, 140],
+                        "lines": [
+                            {
+                                "bbox": [94, 100, 520, 112],
+                                "spans": [
+                                    {"type": "text", "bbox": [94, 100, 160, 112], "content": "图 3-4a 为角度"},
+                                    {"type": "inline_equation", "bbox": [162, 100, 182, 112], "content": r"4 5 ^ { \circ } )"},
+                                    {"type": "text", "bbox": [184, 100, 220, 112], "content": "及频率"},
+                                    {"type": "inline_equation", "bbox": [222, 100, 232, 112], "content": "( f )"},
+                                    {"type": "text", "bbox": [234, 100, 320, 112], "content": "和阻尼比"},
+                                    {"type": "inline_equation", "bbox": [322, 100, 360, 112], "content": r"0 . 0 1 6 ^ { [ 3 0 ] }"},
+                                    {"type": "text", "bbox": [362, 100, 520, 112], "content": "，对应于一个周期的"},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "page_idx": 1,
+                "page_size": [595, 841],
+                "para_blocks": [
+                    {
+                        "type": "text",
+                        "original_label": "text",
+                        "bbox": [68, 76, 520, 90],
+                        "lines": [
+                            {
+                                "bbox": [70, 76, 520, 90],
+                                "spans": [{"type": "text", "bbox": [70, 76, 520, 90], "content": "1.7e-2 s）。"}],
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+        native = [
+            {
+                "rotation": 0,
+                "blocks": [{"lines": [{"spans": [
+                    run("45°", "TimesNewRomanPSMT", 12.0, 162, 182),
+                    run("f", "TimesNewRomanPS-ItalicMT", 12.0, 222, 232),
+                ]}]}],
+            },
+            {"rotation": 0, "blocks": []},
+        ]
+        _merge_cross_page_paragraphs(pages)
+        self.assertEqual(len(pages[1]["para_blocks"]), 0)
+        improve_text_layer(pages, native)
+        md = _build_markdown(pages, "images")
+        self.assertIn('custom-style="T2WBodyIndent"', md)
+        self.assertNotIn("T2WFigureCaption", md)
+        self.assertIn("45°", md)
+        self.assertNotIn(r"4 5 ^", md)
+        self.assertIn("$f$", md)
+        self.assertNotIn("( f )", md)
+        self.assertIn("0.016<sup>[30]</sup>", md)
+        self.assertIn("1.7e-2 s", md)
+
+    def test_markdown_math_tables_and_cross_references(self):
+        sample = FIXTURE.with_name("sample.md")
+        normalized = normalize_markdown(sample.read_text(encoding="utf-8"))
+        # Code fences and bare citations \[1\] must stay untouched.
+        self.assertIn(r'expr = r"\(a + b\) and $x^2$"', normalized)
+        self.assertIn(r"\[1\]", normalized)
+        self.assertIn("$E = mc^2$", normalized)
+        self.assertIn(r"$\alpha + \beta = \gamma$", normalized)
+
+        with TemporaryDirectory() as folder:
+            p = Path(folder)
+            staged = p / "sample.docx"
+            ms = Manuscript(sample, "markdown", read_markdown(sample))
+            ms.write(staged)
+            style_document(staged, ms)
+            # 3 inline in intro + 2 display + 4 inline in pipe table + 1 inline in HTML table = 10
+            self.assertEqual(len(ms.equations), 10)
+            self.assertTrue(ms.book)
+            self.assertEqual(ms.labels["eq:hooke"].number, "1.1")
+            self.assertEqual(ms.equations[3].number, "1-1")
+            with ZipFile(staged) as package:
+                xml = package.read("word/document.xml")
+            self.assertIn(b"REF MTEquation5", xml)
+            doc = Document(staged)
+            self.assertEqual(len(doc.tables), 2)
+            self.assertEqual(len(ms.table_kinds), 2)
 
     @unittest.skipUnless(os.environ.get("TEX2WORD_OFFICE_TEST") == "1", "需要本机 Word 和 MathType")
     def test_edit_save_reopen(self):

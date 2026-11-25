@@ -1,258 +1,624 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Windows.Forms;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+using Microsoft.Win32;
 
 [assembly: AssemblyTitle("TeX2Word")]
 [assembly: AssemblyProduct("TeX2Word")]
-[assembly: AssemblyDescription("将 TeX 和 PDF 转换为含可编辑 MathType 公式的 Word 文档")]
+[assembly: AssemblyDescription("将 PDF、TeX 和 Markdown 转换为含可编辑 MathType 公式的 Word 文档")]
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 
 namespace TeX2Word {
-    internal static class Program {
-        [STAThread]
-        static void Main(string[] files) {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainWindow(files));
+    internal sealed class RelayCommand : ICommand {
+        readonly Action<object> _execute;
+        readonly Func<object, bool> _canExecute;
+
+        public RelayCommand(Action<object> execute, Func<object, bool> canExecute = null) {
+            _execute = execute;
+            _canExecute = canExecute;
+        }
+
+        public event EventHandler CanExecuteChanged;
+        public bool CanExecute(object parameter) { return _canExecute == null || _canExecute(parameter); }
+        public void Execute(object parameter) { _execute(parameter); }
+        public void RaiseCanExecuteChanged() {
+            var h = CanExecuteChanged;
+            if (h != null) h(this, EventArgs.Empty);
         }
     }
 
-    internal sealed class MainWindow : Form {
-        readonly ListView list = new ListView();
-        readonly Button add = ButtonOf("添加文件…"), remove = ButtonOf("移除"),
-            rename = ButtonOf("另存为…"), open = ButtonOf("打开结果"), start = ButtonOf("开始转换");
-        readonly Button browse = ButtonOf("选择目录…"), reset = ButtonOf("使用原目录");
-        readonly ComboBox language = new ComboBox();
-        readonly TextBox folder = new TextBox();
-        readonly Label status = new Label();
-        readonly ProgressBar progress = new ProgressBar();
-        string directory;
-        bool busy;
-
-        static Button ButtonOf(string caption) {
-            return new Button { Text = caption, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Padding = new Padding(9, 3, 9, 3), UseVisualStyleBackColor = true,
-                Anchor = AnchorStyles.Left, Margin = new Padding(0, 3, 6, 3) };
+    internal static class Program {
+        [STAThread]
+        static int Main(string[] args) {
+            if (CliRunner.IsCliInvocation(args)) {
+                CliRunner.EnsureConsoleAttached();
+                return CliRunner.Run(args);
+            }
+            var files = args.Where(a => !String.Equals(a, "--gui", StringComparison.OrdinalIgnoreCase)).ToArray();
+            var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+            var controller = new MainController(app, files);
+            app.Run(controller.Window);
+            return 0;
         }
+    }
 
-        static Label Caption(string text) {
-            return new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left,
-                Margin = new Padding(0, 3, 10, 3) };
-        }
+    internal sealed class MainController {
+        static readonly HashSet<string> SupportedExt = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            ".pdf", ".tex", ".md", ".markdown"
+        };
 
-        public MainWindow(string[] initial) {
-            SuspendLayout();
-            Text = "TeX2Word · 公式文档转换";
-            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-            Font = new Font("Microsoft YaHei UI", 9F);
-            BackColor = Color.White;
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(840, 510);
-            MinimumSize = new Size(700, 450);
-            StartPosition = FormStartPosition.CenterScreen;
-            AllowDrop = true;
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7,
-                Padding = new Padding(20, 14, 20, 14) };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 7; i++) layout.RowStyles.Add(new RowStyle(
-                i == 2 ? SizeType.Percent : SizeType.AutoSize, i == 2 ? 100 : 0));
-            layout.RowStyles[6] = new RowStyle(SizeType.Absolute, 45);
-            Controls.Add(layout);
-            var heading = Caption("将 TeX 和 PDF 转换为 Word");
-            heading.Font = new Font(Font.FontFamily, 15F, FontStyle.Bold);
-            heading.Margin = new Padding(0, 0, 0, 6);
-            layout.Controls.Add(heading, 0, 0);
-            var toolbar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill,
-                WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
-            toolbar.Controls.AddRange(new Control[] { add, remove, rename, open });
-            layout.Controls.Add(toolbar, 0, 1);
+        const string MoonPath = "M20.35,14.35 A8.5,8.5 0 0,1 9.65,3.65 A8.5,8.5 0 1,0 20.35,14.35 Z";
+        const string SunPath  = "M12,7 A5,5 0 1,0 12,17 A5,5 0 1,0 12,7 Z M12,2 V4 M12,20 V22 M4.9,4.9 L6.3,6.3 M17.7,17.7 L19.1,19.1 M2,12 H4 M20,12 H22 M4.9,19.1 L6.3,17.7 M17.7,6.3 L19.1,4.9";
 
-            list.Dock = DockStyle.Fill; list.View = View.Details; list.FullRowSelect = true;
-            list.HideSelection = false; list.MultiSelect = true; list.ShowItemToolTips = true;
-            list.AccessibleName = "转换文件列表"; list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
-            list.Columns.Add("输入文件", 220); list.Columns.Add("Word 输出文件", 420); list.Columns.Add("状态", 108);
-            list.Margin = new Padding(0, 0, 0, 10);
-            layout.Controls.Add(list, 0, 2);
-            list.Resize += (s, e) => {
-                int width = Math.Max(400, list.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 6);
-                int statusWidth = TextRenderer.MeasureText("失败，双击查看　", list.Font).Width + 12;
-                list.Columns[0].Width = width * 31 / 100;
-                list.Columns[1].Width = width - list.Columns[0].Width - statusWidth;
-                list.Columns[2].Width = statusWidth;
+        readonly Application _app;
+        public readonly Window Window;
+        public readonly ObservableCollection<Conversion> Jobs = new ObservableCollection<Conversion>();
+
+        public RelayCommand OpenItemCommand { get; private set; }
+        public RelayCommand RevealItemCommand { get; private set; }
+        public RelayCommand RenameItemCommand { get; private set; }
+        public RelayCommand RetryItemCommand { get; private set; }
+        public RelayCommand InspectErrorCommand { get; private set; }
+        public RelayCommand RemoveItemCommand { get; private set; }
+
+        readonly Border _emptyStateCard, _queueCard, _dragOverlay, _logDrawer;
+        readonly ItemsControl _jobsList;
+        readonly TextBlock _queueCountText, _outputDirText, _statusText, _envText, _toggleLogLabel, _startButtonLabel;
+        readonly Ellipse _envDot;
+        readonly System.Windows.Shapes.Path _themeIcon;
+        readonly Button _envButton, _cliButton, _themeButton, _emptyPickButton, _addMoreButton;
+        readonly Button _clearDoneButton, _clearAllButton, _pickDirButton, _resetDirButton;
+        readonly Button _toggleLogButton, _copyLogButton, _clearLogButton, _startButton, _stopButton;
+        readonly RadioButton _langZhRadio, _langEnRadio;
+        readonly ProgressBar _progressBar;
+        readonly TextBox _logTextBox;
+
+        string _outputDirectory;
+        bool _busy;
+        bool _darkMode;
+        bool _hasWord, _hasMathType;
+        CancellationTokenSource _cts;
+
+        public MainController(Application app, string[] initialFiles) {
+            _app = app;
+            _darkMode = ShellDialogs.SystemPrefersDarkTheme();
+
+            using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("TeX2Word.MainWindow.xaml")) {
+                if (stream == null) throw new InvalidOperationException("缺少内嵌界面资源 TeX2Word.MainWindow.xaml。");
+                Window = (Window)XamlReader.Load(stream);
+            }
+
+            ApplyWindowIcon();
+            Theme.Apply(_app.Resources, Window, _darkMode);
+
+            OpenItemCommand     = new RelayCommand(p => OpenJob(p as Conversion));
+            RevealItemCommand   = new RelayCommand(p => { var j = p as Conversion; if (j != null) ShellDialogs.RevealInExplorer(j.Output); });
+            RenameItemCommand   = new RelayCommand(p => RenameJob(p as Conversion), p => !_busy);
+            RetryItemCommand    = new RelayCommand(p => RetryJob(p as Conversion), p => !_busy);
+            InspectErrorCommand = new RelayCommand(p => InspectError(p as Conversion));
+            RemoveItemCommand   = new RelayCommand(p => RemoveJob(p as Conversion), p => !_busy);
+
+            Window.DataContext = this;
+
+            _emptyStateCard   = (Border)Window.FindName("EmptyStateCard");
+            _queueCard        = (Border)Window.FindName("QueueCard");
+            _dragOverlay      = (Border)Window.FindName("DragOverlay");
+            _logDrawer        = (Border)Window.FindName("LogDrawer");
+            _jobsList         = (ItemsControl)Window.FindName("JobsList");
+            _queueCountText   = (TextBlock)Window.FindName("QueueCountText");
+            _outputDirText    = (TextBlock)Window.FindName("OutputDirText");
+            _statusText       = (TextBlock)Window.FindName("StatusText");
+            _envText          = (TextBlock)Window.FindName("EnvText");
+            _envDot           = (Ellipse)Window.FindName("EnvDot");
+            _themeIcon        = (System.Windows.Shapes.Path)Window.FindName("ThemeIcon");
+            _toggleLogLabel   = (TextBlock)Window.FindName("ToggleLogLabel");
+            _startButtonLabel = (TextBlock)Window.FindName("StartButtonLabel");
+            _envButton        = (Button)Window.FindName("EnvButton");
+            _cliButton        = (Button)Window.FindName("CliButton");
+            _themeButton      = (Button)Window.FindName("ThemeButton");
+            _emptyPickButton  = (Button)Window.FindName("EmptyPickButton");
+            _addMoreButton    = (Button)Window.FindName("AddMoreButton");
+            _clearDoneButton  = (Button)Window.FindName("ClearDoneButton");
+            _clearAllButton   = (Button)Window.FindName("ClearAllButton");
+            _pickDirButton    = (Button)Window.FindName("PickDirButton");
+            _resetDirButton   = (Button)Window.FindName("ResetDirButton");
+            _toggleLogButton  = (Button)Window.FindName("ToggleLogButton");
+            _copyLogButton    = (Button)Window.FindName("CopyLogButton");
+            _clearLogButton   = (Button)Window.FindName("ClearLogButton");
+            _startButton      = (Button)Window.FindName("StartButton");
+            _stopButton       = (Button)Window.FindName("StopButton");
+            _langZhRadio      = (RadioButton)Window.FindName("LangZhRadio");
+            _langEnRadio      = (RadioButton)Window.FindName("LangEnRadio");
+            _progressBar      = (ProgressBar)Window.FindName("MainProgressBar");
+            _logTextBox       = (TextBox)Window.FindName("LogTextBox");
+
+            _jobsList.ItemsSource = Jobs;
+            UpdateThemeIcon();
+
+            Window.SourceInitialized += (s, e) => Theme.Apply(_app.Resources, Window, _darkMode);
+            Window.PreviewDragEnter += OnDragOver;
+            Window.PreviewDragOver  += OnDragOver;
+            Window.PreviewDragLeave += (s, e) => {
+                var pos = e.GetPosition(Window);
+                if (pos.X <= 0 || pos.Y <= 0 || pos.X >= Window.ActualWidth || pos.Y >= Window.ActualHeight)
+                    _dragOverlay.Visibility = Visibility.Collapsed;
             };
-            var pathRow = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 4, Margin = Padding.Empty };
-            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            pathRow.Controls.Add(Caption("输出目录"), 0, 0);
-            folder.ReadOnly = true; folder.Dock = DockStyle.Fill; folder.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-            folder.AccessibleName = "输出目录"; folder.Margin = new Padding(0, 2, 8, 2);
-            pathRow.Controls.Add(folder, 1, 0); pathRow.Controls.Add(browse, 2, 0); pathRow.Controls.Add(reset, 3, 0);
-            layout.Controls.Add(pathRow, 0, 3);
-            var options = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0, 2, 0, 6) };
-            options.Controls.Add(Caption("PDF 识别语言"));
-            language.DropDownStyle = ComboBoxStyle.DropDownList; language.Width = 145;
-            language.AccessibleName = "PDF 识别语言"; language.Items.AddRange(new object[] { "中文或中英混排", "英文" }); language.SelectedIndex = 0;
-            options.Controls.Add(language);
-            layout.Controls.Add(options, 0, 4);
-            progress.Dock = DockStyle.Fill; progress.Height = 6; progress.Margin = new Padding(0, 4, 0, 5);
-            layout.Controls.Add(progress, 0, 5);
-            var actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
-            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            status.Text = "可添加或拖入多个文件，公式可在桌面版 MathType 中编辑。";
-            status.AutoEllipsis = true; status.Dock = DockStyle.Fill; status.TextAlign = ContentAlignment.MiddleLeft;
-            status.AccessibleName = "转换进度"; actions.Controls.Add(status, 0, 0);
-            start.BackColor = Color.FromArgb(25, 83, 147); start.ForeColor = Color.White;
-            start.FlatStyle = FlatStyle.Flat; start.FlatAppearance.BorderSize = 0; start.Padding = new Padding(15, 5, 15, 5);
-            actions.Controls.Add(start, 1, 0); layout.Controls.Add(actions, 0, 6);
-            add.Click += (s, e) => PickFiles();
-            remove.Click += (s, e) => { foreach (var item in Selected()) list.Items.Remove(item); RefreshOutputs(); };
-            rename.Click += (s, e) => RenameOutput();
-            open.Click += (s, e) => OpenSelected();
-            list.DoubleClick += (s, e) => OpenSelected();
-            list.SelectedIndexChanged += (s, e) => SyncButtons();
-            browse.Click += (s, e) => {
-                using (var dialog = new FolderBrowserDialog { Description = "选择生成 Word 文档的目录", SelectedPath = directory ?? "" }) {
-                    if (dialog.ShowDialog(this) == DialogResult.OK) { directory = dialog.SelectedPath; RefreshOutputs(); }
-                }
-            };
-            reset.Click += (s, e) => { directory = null; RefreshOutputs(); };
-            start.Click += (s, e) => ConvertAll();
-            DragEnter += (s, e) => e.Effect = !busy && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
-            DragDrop += (s, e) => { if (!busy) AddFiles((string[])e.Data.GetData(DataFormats.FileDrop)); };
-            KeyPreview = true;
-            KeyDown += (s, e) => {
-                if (busy) return;
-                if (e.Control && e.KeyCode == Keys.O) { e.Handled = true; PickFiles(); }
-                if (e.KeyCode == Keys.F5 && start.Enabled) { e.Handled = true; ConvertAll(); }
-            };
-            FormClosing += (s, e) => {
-                if (busy && e.CloseReason == CloseReason.UserClosing) {
+            Window.PreviewDrop += OnDrop;
+            Window.PreviewKeyDown += OnKeyDown;
+            Window.Closing += (s, e) => {
+                if (_busy) {
                     e.Cancel = true;
-                    MessageBox.Show(this, "正在写入 Word。请在队列完成后关闭窗口。", "正在转换");
+                    MessageBox.Show(Window, "正在进行转换，请等待当前队列完成或点击“停止队列”后再关闭。",
+                        "正在转换", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
             };
-            AddFiles(initial);
-            ResumeLayout(true);
+
+            _envButton.Click       += (s, e) => ShowEnvDialog();
+            _cliButton.Click       += (s, e) => ShowCliDialog();
+            _themeButton.Click     += (s, e) => ToggleTheme();
+            _emptyPickButton.Click += (s, e) => PickFiles();
+            var emptyDrop = Window.FindName("EmptyDropSurface") as UIElement;
+            if (emptyDrop != null) emptyDrop.MouseLeftButtonUp += (s, e) => {
+                if (!_busy && !(e.OriginalSource is Button)) PickFiles();
+            };
+            _addMoreButton.Click   += (s, e) => PickFiles();
+            _clearDoneButton.Click += (s, e) => ClearDoneJobs();
+            _clearAllButton.Click  += (s, e) => ClearAllJobs();
+            _pickDirButton.Click   += (s, e) => PickOutputDirectory();
+            _resetDirButton.Click  += (s, e) => { _outputDirectory = null; RefreshOutputs(); };
+            _toggleLogButton.Click += (s, e) => ToggleLogDrawer();
+            _copyLogButton.Click   += (s, e) => {
+                if (!String.IsNullOrEmpty(_logTextBox.Text)) {
+                    try { Clipboard.SetText(_logTextBox.Text); } catch { }
+                    _statusText.Text = "已复制日志到剪贴板。";
+                }
+            };
+            _clearLogButton.Click += (s, e) => _logTextBox.Clear();
+            _startButton.Click    += (s, e) => ConvertAll();
+            _stopButton.Click     += (s, e) => {
+                if (_cts != null && !_cts.IsCancellationRequested) {
+                    _cts.Cancel();
+                    _stopButton.IsEnabled = false;
+                    _statusText.Text = "正在停止当前转换任务…";
+                }
+            };
+
+            RefreshEnvironmentStatus();
+            AddFiles(initialFiles);
         }
 
-        ListViewItem[] Rows() { return list.Items.Cast<ListViewItem>().ToArray(); }
-        ListViewItem[] Selected() { return list.SelectedItems.Cast<ListViewItem>().ToArray(); }
-        static Conversion Job(ListViewItem row) { return (Conversion)row.Tag; }
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr ExtractAssociatedIcon(IntPtr hInst, string lpIconPath, out ushort lpiIcon);
+
+        [DllImport("user32.dll")]
+        static extern bool DestroyIcon(IntPtr hIcon);
+
+        void ApplyWindowIcon() {
+            try {
+                ushort idx;
+                string exe = Assembly.GetExecutingAssembly().Location;
+                IntPtr hIcon = ExtractAssociatedIcon(IntPtr.Zero, exe, out idx);
+                if (hIcon != IntPtr.Zero) {
+                    try {
+                        Window.Icon = Imaging.CreateBitmapSourceFromHIcon(
+                            hIcon, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                    } finally {
+                        DestroyIcon(hIcon);
+                    }
+                }
+            } catch { }
+        }
+
+        void RefreshEnvironmentStatus() {
+            _hasWord = ShellDialogs.HasWord();
+            _hasMathType = ShellDialogs.HasMathType();
+            if (_hasWord && _hasMathType) {
+                _envText.Text = "Word · MathType 就绪";
+                _envDot.SetResourceReference(Shape.FillProperty, "SuccessDot");
+            } else if (!_hasWord && !_hasMathType) {
+                _envText.Text = "缺少 Word 与 MathType";
+                _envDot.SetResourceReference(Shape.FillProperty, "WarnDot");
+            } else if (!_hasWord) {
+                _envText.Text = "未检测到 Word";
+                _envDot.SetResourceReference(Shape.FillProperty, "WarnDot");
+            } else {
+                _envText.Text = "未检测到 MathType 7";
+                _envDot.SetResourceReference(Shape.FillProperty, "WarnDot");
+            }
+        }
+
+        void ShowEnvDialog() {
+            RefreshEnvironmentStatus();
+            string msg = String.Format(
+                "运行环境检测结果（Windows 桌面版）：\n\n" +
+                "• Microsoft Word 桌面版：{0}\n" +
+                "• MathType 7 桌面版 (Equation.DSMT4)：{1}\n\n" +
+                "说明：TeX2Word 通过 Word COM 与 MathType 桌面 SDK 写入原生可编辑 MathType 公式对象。\n" +
+                "如自定义了 MathType 安装目录，可设置环境变量 MATHTYPE_DLL 指向 64 位 MT6.dll。",
+                _hasWord ? "已检测到 ✓" : "未检测到 ✗",
+                _hasMathType ? "已检测到 ✓" : "未检测到 ✗");
+            MessageBox.Show(Window, msg, "运行环境检测", MessageBoxButton.OK,
+                (_hasWord && _hasMathType) ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+
+        void ToggleTheme() {
+            _darkMode = !_darkMode;
+            Theme.Apply(_app.Resources, Window, _darkMode);
+            UpdateThemeIcon();
+        }
+
+        void UpdateThemeIcon() {
+            _themeIcon.Data = Geometry.Parse(_darkMode ? SunPath : MoonPath);
+        }
+
+        void ToggleLogDrawer() {
+            bool show = _logDrawer.Visibility != Visibility.Visible;
+            _logDrawer.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            _toggleLogLabel.Text = show ? "隐藏日志" : "日志";
+        }
+
+        void AppendLog(string line) {
+            Window.Dispatcher.BeginInvoke(new Action(() => {
+                _logTextBox.AppendText("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line + Environment.NewLine);
+                _logTextBox.ScrollToEnd();
+            }));
+        }
+
+        void OnDragOver(object sender, DragEventArgs e) {
+            if (!_busy && e.Data.GetDataPresent(DataFormats.FileDrop)) {
+                e.Effects = DragDropEffects.Copy;
+                _dragOverlay.Visibility = Visibility.Visible;
+            } else {
+                e.Effects = DragDropEffects.None;
+            }
+            e.Handled = true;
+        }
+
+        void OnDrop(object sender, DragEventArgs e) {
+            _dragOverlay.Visibility = Visibility.Collapsed;
+            if (!_busy && e.Data.GetDataPresent(DataFormats.FileDrop)) {
+                var paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (paths != null) AddFiles(paths);
+            }
+            e.Handled = true;
+        }
+
+        void OnKeyDown(object sender, KeyEventArgs e) {
+            if (e.Key == Key.L && Keyboard.Modifiers == ModifierKeys.Control) {
+                ToggleLogDrawer();
+                e.Handled = true;
+                return;
+            }
+            if (_busy) return;
+            if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control) {
+                PickFiles();
+                e.Handled = true;
+            } else if (e.Key == Key.F5 && _startButton.IsEnabled) {
+                ConvertAll();
+                e.Handled = true;
+            }
+        }
 
         void PickFiles() {
-            using (var dialog = new OpenFileDialog { Multiselect = true, Title = "添加 TeX 或 PDF 文档",
-                Filter = "TeX 和 PDF 文档|*.tex;*.pdf|TeX 主文件|*.tex|PDF 文档|*.pdf" })
-                if (dialog.ShowDialog(this) == DialogResult.OK) AddFiles(dialog.FileNames);
+            var dialog = new OpenFileDialog {
+                Multiselect = true,
+                Title = "添加 PDF、TeX 或 Markdown 文档",
+                Filter = "支持的文档 (*.pdf;*.tex;*.md)|*.pdf;*.tex;*.md;*.markdown|PDF 文档 (*.pdf)|*.pdf|TeX 主文件 (*.tex)|*.tex|Markdown 文档 (*.md)|*.md;*.markdown"
+            };
+            if (dialog.ShowDialog(Window) == true) AddFiles(dialog.FileNames);
+        }
+
+        void PickOutputDirectory() {
+            string chosen = ShellDialogs.PickFolder(Window, "选择 Word 文档输出目录", _outputDirectory);
+            if (!String.IsNullOrEmpty(chosen)) {
+                _outputDirectory = chosen;
+                RefreshOutputs();
+            }
         }
 
         void AddFiles(IEnumerable<string> paths) {
-            var known = new HashSet<string>(Rows().Select(row => Job(row).Source), StringComparer.OrdinalIgnoreCase);
-            int skipped = 0;
+            if (paths == null) return;
+            var known = new HashSet<string>(Jobs.Select(j => j.Source), StringComparer.OrdinalIgnoreCase);
+            int added = 0, skipped = 0;
             foreach (string candidate in paths) {
-                string ext = Path.GetExtension(candidate).ToLowerInvariant();
-                if ((ext != ".tex" && ext != ".pdf") || !File.Exists(candidate)) { skipped++; continue; }
-                string path = Path.GetFullPath(candidate);
-                if (!known.Add(path)) continue;
-                var row = new ListViewItem(new string[] { Path.GetFileName(path), "", "等待转换" });
-                row.Tag = new Conversion(path); row.ToolTipText = path; list.Items.Add(row);
+                if (String.IsNullOrWhiteSpace(candidate)) continue;
+                string ext = System.IO.Path.GetExtension(candidate);
+                if (!SupportedExt.Contains(ext) || !File.Exists(candidate)) { skipped++; continue; }
+                string full = System.IO.Path.GetFullPath(candidate);
+                if (!known.Add(full)) continue;
+                Jobs.Add(new Conversion(full));
+                added++;
             }
-            if (list.Items.Count > 0) status.Text = String.Format("列表中有 {0} 份文件。", list.Items.Count);
-            if (skipped > 0) status.Text += String.Format(" 已跳过 {0} 个无效或不支持的输入。", skipped);
+            if (added > 0 || skipped > 0) {
+                _statusText.Text = added > 0
+                    ? String.Format("已加入 {0} 份文档，当前队列共 {1} 份。", added, Jobs.Count)
+                    : String.Format("当前队列共 {0} 份文档。", Jobs.Count);
+                if (skipped > 0) _statusText.Text += String.Format(" 已跳过 {0} 个不支持或无效的路径。", skipped);
+            }
             RefreshOutputs();
         }
 
         void RefreshOutputs() {
-            folder.Text = directory ?? "各输入文件所在的目录";
-            var reserved = new HashSet<string>(Rows().Select(Job).Where(x => x.Complete || x.CustomOutput)
-                .Select(x => x.Output), StringComparer.OrdinalIgnoreCase);
-            foreach (var row in Rows()) {
-                var job = Job(row);
-                if (!job.Complete && !job.CustomOutput) job.ChooseDefault(directory, reserved);
-                reserved.Add(job.Output);
-                row.SubItems[1].Text = job.Output;
+            _outputDirText.Text = String.IsNullOrEmpty(_outputDirectory) ? "默认：各输入文件所在的目录" : _outputDirectory;
+            _outputDirText.ToolTip = _outputDirText.Text;
+            _resetDirButton.Visibility = String.IsNullOrEmpty(_outputDirectory) ? Visibility.Collapsed : Visibility.Visible;
+
+            var reserved = new HashSet<string>(
+                Jobs.Where(j => j.Complete || j.CustomOutput).Select(j => j.Output).Where(p => !String.IsNullOrEmpty(p)),
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var job in Jobs) {
+                if (!job.Complete && !job.CustomOutput) job.ChooseDefault(_outputDirectory, reserved);
+                if (!String.IsNullOrEmpty(job.Output)) reserved.Add(job.Output);
             }
-            SyncButtons();
+            SyncUiState();
         }
 
-        void SyncButtons() {
-            var sel = Selected();
-            add.Enabled = browse.Enabled = language.Enabled = !busy; reset.Enabled = !busy && directory != null;
-            remove.Enabled = !busy && sel.Length > 0;
-            rename.Enabled = !busy && sel.Length == 1 && !Job(sel[0]).Complete;
-            open.Enabled = sel.Length == 1 && Job(sel[0]).Complete;
-            start.Enabled = !busy && Rows().Any(row => !Job(row).Complete);
-            start.BackColor = start.Enabled ? Color.FromArgb(25, 83, 147) : Color.FromArgb(226, 231, 237);
+        void SyncUiState() {
+            bool hasItems = Jobs.Count > 0;
+            _emptyStateCard.Visibility = hasItems ? Visibility.Collapsed : Visibility.Visible;
+            _queueCard.Visibility = hasItems ? Visibility.Visible : Visibility.Collapsed;
+
+            int doneCount = Jobs.Count(j => j.IsDone);
+            int pendingCount = Jobs.Count(j => !j.IsDone);
+            _queueCountText.Text = doneCount > 0
+                ? String.Format("{0} 份文件 · 已完成 {1}", Jobs.Count, doneCount)
+                : String.Format("{0} 份文件", Jobs.Count);
+
+            _addMoreButton.IsEnabled   = !_busy;
+            _clearDoneButton.IsEnabled = !_busy && doneCount > 0;
+            _clearAllButton.IsEnabled  = !_busy && hasItems;
+            _pickDirButton.IsEnabled   = !_busy;
+            _resetDirButton.IsEnabled  = !_busy && !String.IsNullOrEmpty(_outputDirectory);
+            _langZhRadio.IsEnabled     = !_busy;
+            _langEnRadio.IsEnabled     = !_busy;
+            _startButton.IsEnabled     = !_busy && pendingCount > 0;
+            _stopButton.Visibility     = _busy ? Visibility.Visible : Visibility.Collapsed;
+            _stopButton.IsEnabled      = _busy;
+            _startButtonLabel.Text     = _busy ? "转换中…" : (pendingCount > 0 && doneCount > 0 ? "继续转换" : "开始转换");
+
+            RenameItemCommand.RaiseCanExecuteChanged();
+            RetryItemCommand.RaiseCanExecuteChanged();
+            RemoveItemCommand.RaiseCanExecuteChanged();
         }
 
-        void RenameOutput() {
-            var job = Job(Selected()[0]);
-            using (var dialog = new SaveFileDialog { Filter = "Word 文档|*.docx", DefaultExt = "docx",
-                OverwritePrompt = true, FileName = Path.GetFileName(job.Output), InitialDirectory = Path.GetDirectoryName(job.Output) }) {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                string path = Path.GetFullPath(dialog.FileName);
-                if (Rows().Select(Job).Any(x => x != job && String.Equals(x.Output, path, StringComparison.OrdinalIgnoreCase))) {
-                    MessageBox.Show(this, "队列中已有文件使用这个输出位置，请换一个文件名。", "选择输出"); return;
-                }
-                job.Output = path; job.CustomOutput = true; job.Replace = File.Exists(path); RefreshOutputs();
+        void OpenJob(Conversion job) {
+            if (job == null) return;
+            if (job.IsFailed) { InspectError(job); return; }
+            if (!job.IsDone) return;
+            try {
+                Process.Start(new ProcessStartInfo(job.Output) { UseShellExecute = true });
+            } catch (Exception ex) {
+                MessageBox.Show(Window, ex.Message, "打开 Word 文档", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
-        void OpenSelected() {
-            var row = Selected().FirstOrDefault();
-            if (row == null) return;
-            var job = Job(row);
-            if (!String.IsNullOrEmpty(job.Error)) { MessageBox.Show(this, job.Error, "转换详情"); return; }
-            if (!job.Complete) return;
-            try { Process.Start(new ProcessStartInfo(job.Output) { UseShellExecute = true }); }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "打开 Word 文档"); }
+        void InspectError(Conversion job) {
+            if (job == null) return;
+            string detail = !String.IsNullOrEmpty(job.Error) ? job.Error : "未知错误，请打开底部“日志”面板查看完整输出。";
+            MessageBox.Show(Window, detail, "转换失败详情 · " + job.FileName, MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
+        void RenameJob(Conversion job) {
+            if (job == null || _busy || job.IsDone) return;
+            var dialog = new SaveFileDialog {
+                Filter = "Word 文档 (*.docx)|*.docx",
+                DefaultExt = "docx",
+                OverwritePrompt = true,
+                FileName = System.IO.Path.GetFileName(job.Output),
+                InitialDirectory = System.IO.Path.GetDirectoryName(job.Output)
+            };
+            if (dialog.ShowDialog(Window) != true) return;
+            string path = System.IO.Path.GetFullPath(dialog.FileName);
+            if (Jobs.Any(x => x != job && String.Equals(x.Output, path, StringComparison.OrdinalIgnoreCase))) {
+                MessageBox.Show(Window, "队列中已有其他任务使用这个输出路径，请更换文件名。",
+                    "输出路径冲突", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            job.Output = path;
+            job.CustomOutput = true;
+            job.Replace = File.Exists(path);
+            RefreshOutputs();
+        }
+
+        void RetryJob(Conversion job) {
+            if (job == null || _busy) return;
+            job.ResetForRetry();
+            SyncUiState();
+            _statusText.Text = "已重置 " + job.FileName + "，点击“开始转换”即可重试。";
+        }
+
+        void RemoveJob(Conversion job) {
+            if (job == null || _busy) return;
+            Jobs.Remove(job);
+            RefreshOutputs();
+            if (Jobs.Count == 0) {
+                _progressBar.Value = 0;
+                _statusText.Text = "准备就绪 · 添加文件后点击“开始转换”（或按 F5）";
+            }
+        }
+
+        void ClearDoneJobs() {
+            if (_busy) return;
+            foreach (var j in Jobs.Where(x => x.IsDone).ToArray()) Jobs.Remove(j);
+            RefreshOutputs();
+        }
+
+        void ClearAllJobs() {
+            if (_busy) return;
+            Jobs.Clear();
+            _progressBar.Value = 0;
+            _statusText.Text = "准备就绪 · 添加文件后点击“开始转换”（或按 F5）";
+            RefreshOutputs();
+        }
+
+        void ShowCliDialog() {
+            var dlg = new Window {
+                Owner = Window,
+                Title = "命令行（CLI）快速参考",
+                Width = 620,
+                SizeToContent = SizeToContent.Height,
+                ResizeMode = ResizeMode.NoResize,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Background = (Brush)_app.Resources["CanvasBg"],
+                Foreground = (Brush)_app.Resources["TextPrimary"],
+                FontFamily = Window.FontFamily,
+                UseLayoutRounding = true
+            };
+            dlg.SourceInitialized += (s, e) => Theme.Apply(_app.Resources, dlg, _darkMode);
+
+            var root = new StackPanel { Margin = new Thickness(20) };
+            root.Children.Add(new TextBlock {
+                Text = "安装版已自动将 tex2word 加入用户 PATH，可在 PowerShell 或 CMD 中直接运行：",
+                FontSize = 13, TextWrapping = TextWrapping.Wrap,
+                Foreground = (Brush)_app.Resources["TextSecondary"],
+                Margin = new Thickness(0, 0, 0, 12)
+            });
+
+            string cmds =
+                "# 转换 PDF / TeX / Markdown 为含 MathType 公式的 Word\r\n" +
+                "tex2word \"paper.pdf\" -o \"paper-MathType.docx\"\r\n" +
+                "tex2word \"main.tex\" --force\r\n" +
+                "tex2word \"notes.md\" -o \"notes-MathType.docx\"\r\n\r\n" +
+                "# 混合批量转换到指定目录\r\n" +
+                "tex2word \"a.pdf\" \"b.tex\" \"c.md\" -d \"D:\\Output\"\r\n\r\n" +
+                "# 校验成品文档中的 MathType 原生对象\r\n" +
+                "tex2word --verify \"paper-MathType.docx\"";
+
+            var box = new TextBox {
+                Text = cmds, IsReadOnly = true, AcceptsReturn = true,
+                FontFamily = new FontFamily("Consolas, Microsoft YaHei UI"),
+                FontSize = 12, Padding = new Thickness(12),
+                Background = (Brush)_app.Resources["LogBg"],
+                Foreground = (Brush)_app.Resources["LogFg"],
+                BorderBrush = (Brush)_app.Resources["LogBorder"],
+                BorderThickness = new Thickness(1)
+            };
+            root.Children.Add(box);
+
+            var footer = new StackPanel {
+                Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 14, 0, 0)
+            };
+            var copyBtn = new Button {
+                Content = "复制命令", Style = (Style)Window.Resources["SecondaryButtonStyle"],
+                Margin = new Thickness(0, 0, 8, 0)
+            };
+            copyBtn.Click += (s, e) => { try { Clipboard.SetText(cmds); copyBtn.Content = "已复制 ✓"; } catch { } };
+            var closeBtn = new Button {
+                Content = "关闭", Style = (Style)Window.Resources["PrimaryButtonStyle"],
+                Padding = new Thickness(18, 7, 18, 7), IsDefault = true, IsCancel = true
+            };
+            closeBtn.Click += (s, e) => dlg.Close();
+            footer.Children.Add(copyBtn);
+            footer.Children.Add(closeBtn);
+            root.Children.Add(footer);
+            dlg.Content = root;
+            dlg.ShowDialog();
         }
 
         async void ConvertAll() {
-            if (busy) return;
-            var queue = Rows().Where(row => !Job(row).Complete).ToArray();
+            if (_busy) return;
+            var queue = Jobs.Where(j => !j.IsDone).ToArray();
             if (queue.Length == 0) return;
-            if (Type.GetTypeFromProgID("Word.Application") == null) {
-                MessageBox.Show(this, "请先安装 Microsoft Word 桌面版，然后重新开始转换。", "需要 Word"); return;
+
+            RefreshEnvironmentStatus();
+            if (!_hasWord) {
+                MessageBox.Show(Window, "请先安装 Microsoft Word 桌面版，然后重新开始转换。",
+                    "需要 Microsoft Word", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
             }
+            if (!_hasMathType) {
+                MessageBox.Show(Window, "未检测到 MathType 7 桌面版（Equation.DSMT4）。请安装桌面版 MathType 7 后重试。",
+                    "需要 MathType 7", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             RefreshOutputs();
-            busy = true; SyncButtons();
-            string lang = language.SelectedIndex == 1 ? "en" : "ch";
-            progress.Value = 0; progress.Maximum = queue.Length;
-            int failed = 0;
+            _busy = true;
+            _cts = new CancellationTokenSource();
+            SyncUiState();
+
+            string lang = _langEnRadio.IsChecked == true ? "en" : "ch";
+            _progressBar.IsIndeterminate = false;
+            _progressBar.Value = 0;
+
+            int succeeded = 0, failed = 0;
+            bool cancelled = false;
+
             try {
                 for (int index = 0; index < queue.Length; index++) {
-                    var row = queue[index]; var job = Job(row);
-                    string prefix = String.Format("({0}/{1}) {2}   ", index + 1, queue.Length, row.Text);
-                    row.SubItems[2].Text = "转换中"; job.Error = job.Warning = null; row.EnsureVisible();
-                    status.Text = prefix + "正在读取文档…";
-                    var reporter = new Progress<string>(s => {
-                        if (row.SubItems[2].Text == "转换中") status.Text = prefix + s;
-                    });
+                    if (_cts.IsCancellationRequested) { cancelled = true; break; }
+                    var job = queue[index];
+                    string prefix = String.Format("({0}/{1}) {2} · ", index + 1, queue.Length, job.FileName);
+                    job.Error = null;
+                    job.Warning = null;
+                    job.LiveMessage = "正在启动转换引擎…";
+                    job.State = ConversionState.Running;
+                    _statusText.Text = prefix + "正在读取文档…";
+                    AppendLog("=== 开始转换: " + job.Source + " ===");
+
+                    double basePct = index * 100.0 / queue.Length;
+                    double spanPct = 100.0 / queue.Length;
+                    _progressBar.Value = Math.Max(2, basePct + spanPct * 0.08);
+
                     try {
-                        await job.Run(lang, reporter);
-                        job.Complete = true;
-                        row.SubItems[2].Text = String.IsNullOrEmpty(job.Warning) ? "已完成" : "已完成，有提示";
-                        row.ToolTipText = job.Source + Environment.NewLine + job.Output + Environment.NewLine + job.Warning;
+                        await job.Run(lang, (msg, ratio) => {
+                            Window.Dispatcher.BeginInvoke(new Action(() => {
+                                if (job.State != ConversionState.Running) return;
+                                job.LiveMessage = msg;
+                                _statusText.Text = prefix + msg;
+                                if (ratio.HasValue)
+                                    _progressBar.Value = basePct + spanPct * Math.Min(1.0, Math.Max(0.05, ratio.Value));
+                            }));
+                        }, AppendLog, _cts.Token);
+
+                        job.LiveMessage = null;
+                        job.State = ConversionState.Done;
+                        succeeded++;
+                        _progressBar.Value = (index + 1) * 100.0 / queue.Length;
+                    } catch (OperationCanceledException) {
+                        job.ResetForRetry();
+                        cancelled = true;
+                        AppendLog("用户取消了当前队列。");
+                        break;
                     } catch (Exception ex) {
-                        failed++; job.Error = ex.Message;
-                        row.SubItems[2].Text = "失败，双击查看"; row.ToolTipText = job.Error;
+                        failed++;
+                        job.Error = ex.Message;
+                        job.LiveMessage = null;
+                        job.State = ConversionState.Failed;
+                        AppendLog("转换失败: " + ex.Message);
+                        _progressBar.Value = (index + 1) * 100.0 / queue.Length;
                     }
-                    progress.Value = index + 1;
+                    SyncUiState();
                 }
-                status.Text = String.Format("已完成 {0} 份，失败 {1} 份。", queue.Length - failed, failed)
-                    + (failed > 0 ? "双击失败项查看原因，可再次开始转换。" : "双击已完成的文件即可打开 Word。");
-            } finally { busy = false; SyncButtons(); }
+
+                if (cancelled) {
+                    _statusText.Text = String.Format("已停止队列 · 本次已完成 {0} 份，未完成项保留在队列中。", succeeded);
+                } else if (failed > 0) {
+                    _statusText.Text = String.Format("已完成 {0} 份，失败 {1} 份 · 可点击失败项查看详情或打开底部日志。", succeeded, failed);
+                } else {
+                    _statusText.Text = String.Format("全部 {0} 份文档转换完成 · 点击“打开 Word”即可直接编辑公式。", succeeded);
+                }
+            } finally {
+                _busy = false;
+                if (_cts != null) { _cts.Dispose(); _cts = null; }
+                SyncUiState();
+            }
         }
     }
 }

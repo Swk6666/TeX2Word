@@ -109,11 +109,19 @@ def prepare(payload, model_cache):
         if not (runtime / dll.name).exists():
             shutil.copy2(dll, runtime / dll.name)
     csc = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+    wpf = csc.parent / "WPF"
     desktop = ROOT / "desktop"
-    run(csc, "/nologo", "/target:winexe", "/platform:x64", "/codepage:65001", "/optimize+",
-        "/r:System.Windows.Forms.dll", "/r:System.Drawing.dll", f"/out:{payload / 'TeX2Word.exe'}",
+    run(csc, "/nologo", "/warnaserror+", "/target:winexe", "/platform:x64", "/codepage:65001", "/optimize+",
+        f"/r:{wpf / 'PresentationFramework.dll'}", f"/r:{wpf / 'PresentationCore.dll'}",
+        f"/r:{wpf / 'WindowsBase.dll'}", "/r:System.Xaml.dll",
+        f"/resource:{desktop / 'MainWindow.xaml'},TeX2Word.MainWindow.xaml",
+        f"/out:{payload / 'TeX2Word.exe'}",
         f"/win32icon:{desktop / 'TeX2Word.ico'}", f"/win32manifest:{desktop / 'app.manifest'}",
-        desktop / "Program.cs", desktop / "Conversion.cs")
+        desktop / "Program.cs", desktop / "Conversion.cs", desktop / "CliRunner.cs",
+        desktop / "ShellDialogs.cs", desktop / "Theme.cs")
+    run(csc, "/nologo", "/warnaserror+", "/target:exe", "/platform:x64", "/codepage:65001", "/optimize+",
+        f"/out:{payload / 'TeX2Word.com'}", f"/win32icon:{desktop / 'TeX2Word.ico'}",
+        desktop / "Cli.cs", desktop / "CliRunner.cs")
     shutil.copy2(HERE / "third-party.txt", payload)
 
 

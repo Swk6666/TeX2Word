@@ -18,7 +18,7 @@ VIAddVersionKey "LegalCopyright" "TeX2Word"
 !define MUI_ICON "${ICONFILE}"
 !define MUI_UNICON "${ICONFILE}"
 !define MUI_WELCOMEPAGE_TITLE "安装 TeX2Word"
-!define MUI_WELCOMEPAGE_TEXT "将中文、英文或中英混排的 TeX 和 PDF 文档批量转换为 Word。$\r$\n$\r$\n安装包包含本地识别模型。公式编辑使用电脑上已安装的 Microsoft Word 和桌面版 MathType 7。$\r$\n$\r$\n程序将安装在当前用户的个人应用目录中。"
+!define MUI_WELCOMEPAGE_TEXT "将中文、英文或中英混排的 PDF、TeX 和 Markdown 文档批量转换为 Word（原生可编辑 MathType 公式）。$\r$\n$\r$\n安装包包含本地识别模型。公式编辑使用电脑上已安装的 Microsoft Word 和桌面版 MathType 7。$\r$\n$\r$\n程序将安装在当前用户的个人应用目录中。"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\TeX2Word.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "打开 TeX2Word"
 !insertmacro MUI_PAGE_WELCOME
@@ -68,11 +68,13 @@ Section "TeX2Word"
   WriteRegDWORD HKCU "${UNINSTALLKEY}" "EstimatedSize" ${SIZEKB}
   WriteRegDWORD HKCU "${UNINSTALLKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALLKEY}" "NoRepair" 1
+  nsExec::ExecToLog '"$INSTDIR\runtime\python.exe" -I -B -m tex2word.winpath add "$INSTDIR"'
 SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
   SetRegView 64
+  nsExec::ExecToLog '"$INSTDIR\runtime\python.exe" -I -B -m tex2word.winpath remove "$INSTDIR"'
   Delete "$SMPROGRAMS\TeX2Word.lnk"
   Delete "$DESKTOP\TeX2Word.lnk"
   !include "${REMOVEFILES}"

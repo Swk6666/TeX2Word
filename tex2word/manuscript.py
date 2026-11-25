@@ -14,6 +14,8 @@ ENV = re.compile(r"^\s*\\begin\{(equation|alignat|align|gather|multline|eqnarray
 LABEL = re.compile(r"\\label\s*\{([^{}]+)\}")
 TAG = re.compile(r"\\tag(\*?)\s*\{([^{}]+)\}")
 REF = re.compile(r"\\(eqref|ref)\s*\{([^{}]+)\}")
+CHAPTER_HEAD = re.compile(r"第\s*[0-9一二三四五六七八九十百零]+\s*章|Chapter\s+\w+", re.I)
+SECTION_NUM = re.compile(r"^(\d+(?:\.\d+)+)(?!\d|\.)")
 BREAK = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
 
 
@@ -62,6 +64,10 @@ class Manuscript:
         self.has_toc = False
         self.date = date
         self.aux = {}
+        self.table_kinds = []
+        self._in_html_table = False
+        self.centered_headings = set()
+        self._heading_count = 0
         aux_path = source.with_suffix(".aux")
         if kind == "latex" and aux_path.is_file():
             self.aux = dict(re.findall(r"\\newlabel\{([^{}]+)\}\{\{([^{}]+)\}",
@@ -122,6 +128,7 @@ class Manuscript:
             tab = "<w:r><w:tab/></w:r>"
             content = tab + content + tab + number
         return raw("Block", '<w:p><w:pPr>' + fmt +
+                   '<w:ind w:left="0" w:firstLine="0"/>'
                    '<w:spacing w:before="65" w:after="70" w:line="240" w:lineRule="auto"/>'
                    '</w:pPr>' + content + '</w:p>')
 
@@ -145,12 +152,33 @@ class Manuscript:
         flush()
         return blocks
 
+    def _html_table_blocks(self, kind: str, html_markup: str):
+        parsed = json.loads(pandoc(["-f", "html+tex_math_dollars", "-t", "json"],
+                                   self.source.parent, html_markup.encode("utf-8")))
+        rewritten = []
+        prev = self._in_html_table
+        self._in_html_table = True
+        try:
+            for blk in parsed.get("blocks", []):
+                if blk.get("t") == "Table":
+                    self.table_kinds.append(kind)
+                rewritten.append(self.rewrite(blk))
+        finally:
+            self._in_html_table = prev
+        return rewritten
+
     def rewrite(self, value):
         if isinstance(value, list):
             result = []
             for item in value:
                 if isinstance(item, dict) and item.get("t") in {"Plain", "Para"}:
                     result.extend(self.paragraph(item))
+                elif (isinstance(item, dict) and item.get("t") == "RawBlock"
+                      and item["c"][0] in {"t2w-table", "t2w-table-meta", "t2w-table-sig"}):
+                    result.extend(self._html_table_blocks(item["c"][0], item["c"][1]))
+                elif (isinstance(item, dict) and item.get("t") == "RawBlock"
+                      and item["c"][0] == "html" and "<table" in item["c"][1].lower()):
+                    result.extend(self._html_table_blocks("t2w-table", item["c"][1]))
                 else:
                     result.append(self.rewrite(item))
             return result
@@ -160,14 +188,24 @@ class Manuscript:
         if kind == "Math":
             eq, _ = next(self.equations_for(value))
             return raw("Inline", text_run(eq.marker))
-        if self.book and kind == "Header" and data[0] == 1 and "unnumbered" not in data[1][1]:
-            self.chapter += 1
-            self.seq = 0
+        if kind == "Header":
+            self._heading_count += 1
+            classes = data[1][1]
+            if "t2w-center" in classes:
+                self.centered_headings.add(self._heading_count)
+                classes = [c for c in classes if c != "t2w-center"]
+                value = {"t": "Header", "c": [data[0], [data[1][0], classes, data[1][2]], data[2]]}
+                data = value["c"]
+            if self.book and data[0] == 1 and "unnumbered" not in data[1][1]:
+                self.chapter += 1
+                self.seq = 0
+        if kind == "Table" and not self._in_html_table:
+            self.table_kinds.append("t2w-table")
         if kind == "RawBlock" and data[0] in {"tex", "latex"}:
             cmd = data[1].strip()
             if cmd == r"\tableofcontents":
                 self.has_toc = True
-                title = "目录" if self.zh else "Contents"
+                title = "目 录" if self.zh else "Contents"
                 return raw("Block", '<w:p><w:pPr><w:pStyle w:val="TOCHeading"/>'
                            '<w:pageBreakBefore/><w:keepNext/></w:pPr>' + text_run(title) +
                            '</w:p><w:p>' + field(r'TOC \o "1-3" \h \z', "") + '</w:p>')
@@ -204,9 +242,16 @@ class Manuscript:
             args[1] = "latex+raw_tex"
             args[-1] = "-"
             tree = json.loads(pandoc(args, self.source.parent, self.tex.encode("utf-8")))
+        elif self.tex:
+            args[1] = "markdown+tex_math_dollars+raw_tex"
+            args[-1] = "-"
+            tree = json.loads(pandoc(args, self.source.parent, self.tex.encode("utf-8")))
+            self.pdf_headings(tree, adjust_levels=False)
         else:
+            if not self.zh:
+                self.zh = bool(re.search(r"[\u3400-\u9fff]", self.source.read_text("utf-8", errors="replace")))
             tree = json.loads(pandoc(args, self.source.parent))
-            self.pdf_headings(tree)
+            self.pdf_headings(tree, adjust_levels=True)
         if self.date is not None:
             tree["meta"]["date"] = {"t": "MetaString", "c": self.date}
         tree = self.references(self.rewrite(tree))
@@ -216,7 +261,7 @@ class Manuscript:
             args.append("--number-sections")
         pandoc(args, self.source.parent, json.dumps(tree).encode())
 
-    def pdf_headings(self, tree):
+    def pdf_headings(self, tree, adjust_levels=True):
         """Use a live Word TOC when OCR recovered a printed table of contents."""
         blocks = tree["blocks"]
 
@@ -225,20 +270,28 @@ class Manuscript:
                 return ""
             return "".join(n.get("c", "") if n["t"] == "Str" else " " for n in item["c"][2]).strip()
 
+        def dots_in(block):
+            if block["t"] in {"Plain", "Para"}:
+                return sum(n.get("c", "").count(".") + 3 * n.get("c", "").count("…")
+                           for n in block["c"] if n["t"] == "Str")
+            if block["t"] == "Div":
+                return sum(dots_in(child) for child in block["c"][1])
+            return 0
+
         for i, block in enumerate(blocks):
             title = heading(block)
-            if title.casefold() not in {"目录", "目 录", "contents", "table of contents"}:
+            if re.sub(r"\s+", "", title).casefold() not in {"目录", "contents", "tableofcontents"}:
                 continue
             following = next((j for j in range(i + 1, len(blocks)) if heading(blocks[j])), None)
             if following is None:
                 continue
             entries = blocks[i+1:following]
-            if not entries or any(b["t"] not in {"Plain", "Para"} for b in entries):
+            if not entries or any(b["t"] not in {"Plain", "Para", "Div"} for b in entries):
                 continue
-            dots = sum(n.get("c", "").count(".") for b in entries for n in b["c"] if n["t"] == "Str")
+            dots = sum(dots_in(b) for b in entries)
             if dots < 6:
                 continue
-            self.zh = bool(re.search(r"[\u3400-\u9fff]", title))
+            self.zh = self.zh or bool(re.search(r"[\u3400-\u9fff]", title))
             blocks[i:following] = [{"t": "RawBlock", "c": ["latex", r"\tableofcontents"]}]
             if i in (1, 2) and heading(blocks[0]):
                 date = []
@@ -253,7 +306,7 @@ class Manuscript:
             break
         for block in blocks:
             title = heading(block)
-            if re.match(r"第\S+章|Chapter\s+\w+", title, re.I):
+            if CHAPTER_HEAD.match(title):
                 self.book = True
-            if match := re.match(r"^(\d+(?:\.\d+)+)\b", title):
+            if adjust_levels and (match := SECTION_NUM.match(title)):
                 block["c"][0] = min(6, match[1].count(".") + 1)
