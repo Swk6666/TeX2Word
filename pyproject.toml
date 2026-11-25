@@ -32,6 +32,11 @@ dependencies = [
     "rapid-doc[cpu]==0.9.12",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Swk6666/TeX2Word"
+Repository = "https://github.com/Swk6666/TeX2Word"
+Issues = "https://github.com/Swk6666/TeX2Word/issues"
+
 [project.scripts]
 tex2word = "tex2word.__main__:main"
 

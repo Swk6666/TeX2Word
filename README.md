@@ -69,7 +69,7 @@
 ### Option 2: Run from Source
 
 ```powershell
-git clone https://github.com/<your-username>/TeX2Word.git
+git clone https://github.com/Swk6666/TeX2Word.git
 cd TeX2Word
 .\Setup.cmd
 ```

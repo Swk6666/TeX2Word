@@ -14,7 +14,7 @@ TeX2Word targets **64-bit Windows 10 / 11**.
 ### Setup
 
 ```powershell
-git clone https://github.com/<your-username>/TeX2Word.git
+git clone https://github.com/Swk6666/TeX2Word.git
 cd TeX2Word
 .\Setup.cmd
 ```
