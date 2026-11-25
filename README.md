@@ -45,8 +45,10 @@
 - **Modern Windows Desktop GUI + Full CLI**
   - Fluent-inspired WPF desktop app with Light/Dark theme switching, drag-and-drop mixed-format batch queue, per-file progress and equation counts, one-click open in Word / reveal in Explorer, live engine log drawer, and instant environment diagnostics.
   - Full command-line tool (`tex2word`) automatically added to user `PATH` by the installer for batch scripts and automation.
-- **Fully Offline Conversion**
-  - The Windows installer bundles Python 3.12, Pandoc, all Python libraries, and local OCR/formula ONNX models—no internet connection or cloud API keys required.
+- **Lightweight Installer + Offline Local Inference**
+  - The standard Windows installer bundles Python 3.12, Pandoc, and all core libraries so **TeX and Markdown work 100% offline immediately** with a compact installer size.
+  - On your first **PDF** conversion, TeX2Word automatically downloads and SHA-256 verifies the two large local PDF recognition models (`PP-DocLayoutV3` + `PP-FormulaNet_plus-M`) into `%LOCALAPPDATA%\TeX2Word\models` (with live GUI/CLI progress); every PDF conversion thereafter runs 100% offline with zero cloud API keys, and cached models survive app upgrades.
+  - Need air-gapped offline deployment? Build a self-contained offline installer with `python packaging\windows\build.py --offline`.
 
 ## System Requirements
 
@@ -59,9 +61,9 @@
 
 ## Installation
 
-### Option 1: Windows Offline Installer (Recommended)
+### Option 1: Windows Installer (Recommended)
 
-1. Download `TeX2Word-Setup-1.0.0-x64.exe` from [GitHub Releases](../../releases) (or [build it from source](#building-the-windows-installer)).
+1. Download `TeX2Word-Setup-1.0.0-x64.exe` (~130 MB) from [GitHub Releases](../../releases) (or [build it from source](#building-the-windows-installer)).
 2. Double-click the installer to install per-user under `%LOCALAPPDATA%\Programs\TeX2Word` (no administrator privileges required).
 3. Launch **TeX2Word** from the Desktop / Start Menu shortcut, or run `tex2word` directly in PowerShell / Command Prompt.
 4. Uninstall cleanly anytime from Windows **Settings → Apps → Installed apps**.
@@ -147,12 +149,13 @@ print(f"Saved {output_path} with {equation_count} verified MathType equations.")
 assert verify(output_path) == equation_count
 ```
 
-### Custom MathType Path
+### Custom MathType & Model Cache Paths
 
-If MathType 7 is installed in a non-standard directory, point `MATHTYPE_DLL` to the 64-bit `MT6.dll` matching your Python architecture:
+If MathType 7 is installed in a non-standard directory, point `MATHTYPE_DLL` to the 64-bit `MT6.dll` matching your Python architecture. You can also customize the local PDF ONNX model cache directory with `TEX2WORD_MODEL_DIR`:
 
 ```powershell
 $env:MATHTYPE_DLL = "D:\Tools\MathType\System\64\MT6.dll"
+$env:TEX2WORD_MODEL_DIR = "D:\Models\TeX2Word"
 ```
 
 ## Input & Output Notes
@@ -167,16 +170,14 @@ $env:MATHTYPE_DLL = "D:\Tools\MathType\System\64\MT6.dll"
 Requires 64-bit Windows, Python 3.12, [`uv`](https://docs.astral.sh/uv/), and Visual Studio Build Tools with the x64 C++ Redistributable:
 
 ```powershell
+# Standard lightweight installer (downloads PDF models on first PDF conversion)
 python packaging\windows\build.py
+
+# Full air-gapped offline installer (bundles all PDF ONNX models)
+python packaging\windows\build.py --offline --model-cache .venv\Lib\site-packages
 ```
 
-To reuse already-downloaded RapidDoc/RapidOCR ONNX models from `.venv` (SHA-256 verified):
-
-```powershell
-python packaging\windows\build.py --model-cache .venv\Lib\site-packages
-```
-
-The self-contained installer is written to `release\TeX2Word-Setup-1.0.0-x64.exe`.
+Installers use LZMA solid compression and are written to `release\TeX2Word-Setup-1.0.0-x64.exe` (or `TeX2Word-Setup-1.0.0-x64-offline.exe` with `--offline`).
 
 ## Testing
 
@@ -201,6 +202,7 @@ TeX2Word/
 ├── tex2word/                  # Core Python conversion engine
 │   ├── convert.py             # Orchestration, %TEMP% staging & atomic publish
 │   ├── pdf_input.py           # Local RapidDoc PDF layout/OCR, figure & table cleanup
+│   ├── models.py              # Local & on-demand SHA-256 verified ONNX model cache
 │   ├── tex_input.py           # TeX encoding detection & \input/\include expansion
 │   ├── md_input.py            # Markdown math & HTML table normalization
 │   ├── manuscript.py          # Pandoc AST rewriting, numbering, TOC & cross-refs

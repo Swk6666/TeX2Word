@@ -996,11 +996,19 @@ def _build_markdown(pages: list, img_prefix: str) -> str:
 def pdf_markdown(source: Path, work: Path, lang: str, progress):
     from pdftext.extraction import dictionary_output
     from rapid_doc import RapidDoc
+    from .models import ensure_pdf_models
 
+    model_paths = ensure_pdf_models(progress)
     progress("正在本机识别 PDF 版面、正文和公式。")
     # Retain the native PDF table route. For raster tables, use the OCR model
     # distributed with RapidDoc so a new table layout also works offline.
-    engine = RapidDoc(lang=lang, pdf_pages_batch=8, table_config={"model_type": "slanet_1m"})
+    engine = RapidDoc(
+        lang=lang,
+        pdf_pages_batch=8,
+        layout_config={"model_dir_or_path": str(model_paths["layout"])},
+        formula_config={"model_dir_or_path": str(model_paths["formula"])},
+        table_config={"model_type": "slanet_1m"},
+    )
     result = engine(source, f_dump_content_list=False)
     pages = result.middle_json["pdf_info"]
     if not pages:

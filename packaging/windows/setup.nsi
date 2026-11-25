@@ -6,7 +6,8 @@ Name "TeX2Word"
 OutFile "${OUTPUT}"
 InstallDir "$LOCALAPPDATA\Programs\TeX2Word"
 RequestExecutionLevel user
-SetCompressor /FINAL zlib
+SetCompressor /SOLID /FINAL lzma
+SetCompressorDictSize 32
 AllowSkipFiles off
 BrandingText "TeX2Word ${VERSION}"
 VIProductVersion "${VERSION}.0"
@@ -18,7 +19,11 @@ VIAddVersionKey "LegalCopyright" "TeX2Word"
 !define MUI_ICON "${ICONFILE}"
 !define MUI_UNICON "${ICONFILE}"
 !define MUI_WELCOMEPAGE_TITLE "安装 TeX2Word"
-!define MUI_WELCOMEPAGE_TEXT "将中文、英文或中英混排的 PDF、TeX 和 Markdown 文档批量转换为 Word（原生可编辑 MathType 公式）。$\r$\n$\r$\n安装包包含本地识别模型。公式编辑使用电脑上已安装的 Microsoft Word 和桌面版 MathType 7。$\r$\n$\r$\n程序将安装在当前用户的个人应用目录中。"
+!ifdef OFFLINE_MODELS
+!define MUI_WELCOMEPAGE_TEXT "将中文、英文或中英混排的 PDF、TeX 和 Markdown 文档批量转换为 Word（原生可编辑 MathType 公式）。$\r$\n$\r$\n离线安装包已内置本地 PDF 识别模型，全程可离线使用。公式编辑使用电脑上已安装的 Microsoft Word 和桌面版 MathType 7。$\r$\n$\r$\n程序将安装在当前用户的个人应用目录中。"
+!else
+!define MUI_WELCOMEPAGE_TEXT "将中文、英文或中英混排的 PDF、TeX 和 Markdown 文档批量转换为 Word（原生可编辑 MathType 公式）。$\r$\n$\r$\nTeX 与 Markdown 转换安装后即可离线使用；首次转换 PDF 时会自动下载并缓存本地识别模型。公式编辑使用电脑上已安装的 Microsoft Word 和桌面版 MathType 7。$\r$\n$\r$\n程序将安装在当前用户的个人应用目录中。"
+!endif
 !define MUI_FINISHPAGE_RUN "$INSTDIR\TeX2Word.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "打开 TeX2Word"
 !insertmacro MUI_PAGE_WELCOME

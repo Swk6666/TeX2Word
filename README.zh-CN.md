@@ -45,8 +45,10 @@
 - **现代 Fluent 桌面端 + 完整命令行（CLI）**
   - 全新 WPF 桌面界面：支持浅色/深色主题一键切换、拖放多格式混合批量队列、单文件实时进度与已写入公式数显示、一键打开 Word / 资源管理器定位、可折叠实时日志面板与 Word/MathType 环境自检。
   - 安装版自动将 `tex2word` 加入当前用户 `PATH`，可在 PowerShell / CMD 中直接命令行调用，便于批量处理和脚本集成。
-- **纯本地离线运行**
-  - Windows 安装包已内置 Python 3.12、Pandoc、依赖库与 OCR/公式识别模型，安装和转换全程无需联网、无需任何云端 API Key。
+- **轻量安装包 + 纯本地推理**
+  - 标准版 Windows 安装包内置 Python 3.12、Pandoc 与全部核心依赖，体积大幅精简，安装后 **TeX 与 Markdown 转换即刻 100% 离线可用**。
+  - 首次转换 **PDF** 时，程序自动从 ModelScope 按需下载并做 SHA-256 校验，将两个大型 PDF 识别模型（`PP-DocLayoutV3` + `PP-FormulaNet_plus-M`）缓存到 `%LOCALAPPDATA%\TeX2Word\models`（界面与命令行实时显示进度）；此后 PDF 转换全程本地离线，无需任何云端 API Key，软件升级也无需重新下载模型。
+  - 若需纯内网/完全断网部署，也可使用 `python packaging\windows\build.py --offline` 构建内置全套模型的离线安装包。
 
 ## 系统要求
 
@@ -59,9 +61,9 @@
 
 ## 安装方式
 
-### 方式一：Windows 离线安装包（推荐）
+### 方式一：Windows 安装包（推荐）
 
-1. 从 [GitHub Releases](../../releases) 下载 `TeX2Word-Setup-1.0.0-x64.exe`（或按下方说明[从源码构建安装包](#从源码构建-windows-离线安装包)）。
+1. 从 [GitHub Releases](../../releases) 下载 `TeX2Word-Setup-1.0.0-x64.exe`（约 130 MB，或按下方说明[从源码构建安装包](#从源码构建-windows-安装包)）。
 2. 双击运行安装程序，默认安装在当前用户目录 `%LOCALAPPDATA%\Programs\TeX2Word`（无需管理员权限）。
 3. 从桌面或开始菜单打开 **TeX2Word**，或在任意 PowerShell / 命令提示符中直接使用 `tex2word` 命令。
 4. 如需卸载，可在 Windows“设置 → 应用 → 已安装的应用”中一键卸载。
@@ -147,12 +149,13 @@ print(f"已生成 {output_path}，共 {equation_count} 个已校验的 MathType 
 assert verify(output_path) == equation_count
 ```
 
-### 自定义 MathType 路径
+### 自定义 MathType 与模型缓存路径
 
-如果 MathType 7 安装在非默认目录，可通过环境变量 `MATHTYPE_DLL` 指定与 Python 位数一致的 64 位 `MT6.dll`：
+如果 MathType 7 安装在非默认目录，可通过环境变量 `MATHTYPE_DLL` 指定与 Python 位数一致的 64 位 `MT6.dll`；如需自定义本地 PDF 模型缓存目录，可设置 `TEX2WORD_MODEL_DIR`：
 
 ```powershell
 $env:MATHTYPE_DLL = "D:\Tools\MathType\System\64\MT6.dll"
+$env:TEX2WORD_MODEL_DIR = "D:\Models\TeX2Word"
 ```
 
 ## 输入输出与注意事项
@@ -162,21 +165,19 @@ $env:MATHTYPE_DLL = "D:\Tools\MathType\System\64\MT6.dll"
 - **PDF 识别**：本地识别同时支持电子版和扫描件，但 PDF 逆向还原受原稿排版影响，转换后建议对照原稿复核极小上下标、形近符号及复杂多栏顺序；Word 也会按可编辑文本重新分页。
 - **Markdown**：兼容 `$...$`、`$$...$$`、`\(...\)`、`\[...\]`、独立 `\begin{equation}` / `\begin{align}` 环境、Markdown 管道表和原始 HTML `<table>`，不会误伤代码块与普通文献引用 `\[1\]`。
 
-## 从源码构建 Windows 离线安装包
+## 从源码构建 Windows 安装包
 
 需要 64 位 Windows、Python 3.12、[`uv`](https://docs.astral.sh/uv/) 以及含 x64 C++ 可再分发组件的 Visual Studio Build Tools：
 
 ```powershell
+# 构建轻量标准版安装包（首次转换 PDF 时自动下载并缓存模型）
 python packaging\windows\build.py
+
+# 构建完整离线安装包（内置全部 PDF ONNX 模型，适合纯断网环境）
+python packaging\windows\build.py --offline --model-cache .venv\Lib\site-packages
 ```
 
-如果本地 `.venv` 已下载过 RapidDoc / RapidOCR 模型，可通过 `--model-cache` 复用（构建脚本会自动校验 SHA-256）：
-
-```powershell
-python packaging\windows\build.py --model-cache .venv\Lib\site-packages
-```
-
-打包完成后，离线安装程序会输出到 `release\TeX2Word-Setup-1.0.0-x64.exe`。
+安装包采用 LZMA 固实压缩，打包完成后输出到 `release\TeX2Word-Setup-1.0.0-x64.exe`（加 `--offline` 时输出 `TeX2Word-Setup-1.0.0-x64-offline.exe`）。
 
 ## 运行测试
 
@@ -201,6 +202,7 @@ TeX2Word/
 ├── tex2word/                  # 核心 Python 转换引擎
 │   ├── convert.py             # 转换主流程、%TEMP% 中间目录与原子发布
 │   ├── pdf_input.py           # 本地 RapidDoc 版面/公式识别、图片重组与表格清理
+│   ├── models.py              # 本地及首次按需下载的 ONNX 模型缓存与 SHA-256 校验
 │   ├── tex_input.py           # TeX 编码检测与 \input/\include 递归展开
 │   ├── md_input.py            # Markdown 公式语法与 HTML 表格预处理
 │   ├── manuscript.py          # Pandoc AST 重写、公式编号、目录与交叉引用

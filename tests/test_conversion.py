@@ -240,6 +240,73 @@ class ConversionTests(unittest.TestCase):
             self.assertEqual(len(doc.tables), 2)
             self.assertEqual(len(ms.table_kinds), 2)
 
+    def test_pdf_model_cache_and_verified_download(self):
+        import hashlib
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from threading import Thread
+        from unittest.mock import patch
+        from tex2word import models
+
+        payload_a = b"A" * 1_100_000
+        payload_b = b"B" * 1_100_000
+        sha_a = hashlib.sha256(payload_a).hexdigest()
+        sha_b = hashlib.sha256(payload_b).hexdigest()
+        specs = (
+            models.ModelSpec("layout", "layout.onnx", "版面模型", "bundled/layout.onnx", "layout.onnx", sha_a),
+            models.ModelSpec("formula", "formula.onnx", "公式模型", "bundled/formula.onnx", "formula.onnx", sha_b),
+        )
+        served = {"/layout.onnx": payload_a, "/formula.onnx": payload_b}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = served.get(self.path)
+                if data is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with TemporaryDirectory() as folder:
+                p = Path(folder).resolve()
+                cache_dir = p / "cache"
+                empty_site = p / "site"
+                empty_site.mkdir()
+                logs = []
+                with patch.object(models, "PDF_MODELS", specs), patch.dict(os.environ, {"TEX2WORD_MODEL_DIR": str(cache_dir)}):
+                    # 1. Downloads both models on first call and verifies SHA-256.
+                    paths = models.ensure_pdf_models(logs.append, site_packages=empty_site, base_url=f"http://127.0.0.1:{port}/")
+                    self.assertEqual(paths["layout"], cache_dir / "layout.onnx")
+                    self.assertEqual(paths["formula"], cache_dir / "formula.onnx")
+                    self.assertTrue(any("正在首次下载" in m for m in logs))
+
+                    # 2. Second call hits cache with zero network access.
+                    logs.clear()
+                    paths2 = models.ensure_pdf_models(logs.append, site_packages=empty_site, base_url="http://127.0.0.1:1/")
+                    self.assertEqual(paths2, paths)
+                    self.assertEqual(logs, [])
+
+                    # 3. Corrupted remote payload fails SHA-256 and leaves no .part file.
+                    (cache_dir / "formula.onnx").unlink()
+                    served["/formula.onnx"] = b"X" * 1_100_000
+                    with self.assertRaises(RuntimeError) as ctx:
+                        models.ensure_pdf_models(logs.append, site_packages=empty_site, base_url=f"http://127.0.0.1:{port}/")
+                    self.assertIn("SHA-256", str(ctx.exception))
+                    self.assertFalse((cache_dir / "formula.onnx.part").exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+
     @unittest.skipUnless(os.environ.get("TEX2WORD_OFFICE_TEST") == "1", "需要本机 Word 和 MathType")
     def test_edit_save_reopen(self):
         with TemporaryDirectory() as folder:

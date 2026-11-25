@@ -18,6 +18,7 @@ namespace TeX2Word {
     internal sealed class Conversion : INotifyPropertyChanged {
         static readonly Regex SavedCountPattern = new Regex(@"（(\d+)\s*个\s*MathType", RegexOptions.Compiled);
         static readonly Regex MathProgressPattern = new Regex(@"(\d+)/(\d+)\s*个公式", RegexOptions.Compiled);
+        static readonly Regex DownloadProgressPattern = new Regex(@"正在首次下载.*?\((\d+)/(\d+)\)[：:]\s*(\d+)%", RegexOptions.Compiled);
 
         public readonly string Source;
         public string FileName { get; private set; }
@@ -205,6 +206,17 @@ namespace TeX2Word {
                                 if (Int32.TryParse(m.Groups[1].Value, out cur) &&
                                     Int32.TryParse(m.Groups[2].Value, out total) && total > 0)
                                     ratio = 0.45 + 0.50 * cur / total;
+                            }
+                            if (onProgress != null) onProgress(line, ratio);
+                        } else if (line.StartsWith("正在首次下载")) {
+                            double? ratio = null;
+                            var dm = DownloadProgressPattern.Match(line);
+                            if (dm.Success) {
+                                int cur, total, pct;
+                                if (Int32.TryParse(dm.Groups[1].Value, out cur) &&
+                                    Int32.TryParse(dm.Groups[2].Value, out total) &&
+                                    Int32.TryParse(dm.Groups[3].Value, out pct) && total > 0)
+                                    ratio = 0.04 + 0.24 * ((cur - 1) + pct / 100.0) / total;
                             }
                             if (onProgress != null) onProgress(line, ratio);
                         } else if (line.StartsWith("正在") || line.StartsWith("识别到") || line.StartsWith("已识别")) {
